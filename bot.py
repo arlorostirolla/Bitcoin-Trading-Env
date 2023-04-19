@@ -202,3 +202,23 @@ def objective(trial, data, device):
     val_loss = train_tft_model(model, train_loader, val_loader, num_epochs, learning_rate, device)
 
     return val_loss
+
+def create_dataset(data):
+    X, y = [], []
+    n_steps_in, n_steps_out = 30, 5
+
+    for i in range(len(data)):
+        end_ix = i + n_steps_in
+        out_end_ix = end_ix + n_steps_out
+
+        if out_end_ix > len(data):
+            break
+
+        seq_X, seq_y = data[i:end_ix, :-1], data[end_ix:out_end_ix, -1]
+        X.append(seq_X)
+        y.append(seq_y)
+
+    X = np.array(X)
+    y = np.array(y)
+    print(f"Created {len(X)} input/output sequences")
+    return X, y
