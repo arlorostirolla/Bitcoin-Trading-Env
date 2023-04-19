@@ -1,4 +1,4 @@
-import torch
+import torch, optuna, ccxt, os, time, ta
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
@@ -6,10 +6,6 @@ import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.model_selection import train_test_split
-import optuna
-import ccxt
-import os
-import time
 
 class GLU(nn.Module):
     def __init__(self, input_size, output_size):
@@ -123,4 +119,60 @@ class TemporalFusionTransformer(nn.Module):
         return x
 
         
+def train_tft_model(model, train_loader, val_loader, num_epochs, learning_rate, device):
+    model.to(device)
+    # Define the optimizer and loss function
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    criterion = nn.MSELoss(reduction='mean')
+
+
+    for epoch in range(num_epochs):
+        # Training phase
+        model.train()
+        train_loss = 0.0
+        for i, (batch_x, batch_y) in enumerate(train_loader):
+            # Send batch data to device
+            batch_x = batch_x.to(device) 
+            batch_y = batch_y.to(device)
+            # Forward pass
+            outputs = model(batch_x) 
+            # Reshape batch_y to match outputs size
+            batch_y = batch_y.unsqueeze(1).repeat(1, outputs.size(1), 1) 
+            # Compute loss and backward pass
+            loss = criterion(outputs, batch_y)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            # Accumulate training loss
+            train_loss += loss.item() 
+            
+        # Compute average training loss
+        train_loss /= len(train_loader)
         
+        # Validation phase
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for batch_x, batch_y in val_loader:
+                # Send batch data to device
+                batch_x = batch_x.to(device)
+                batch_y = batch_y.to(device)
+                # Forward pass
+                outputs = model(batch_x)
+                # Reshape batch_y to match outputs size
+                batch_y = batch_y.unsqueeze(1).repeat(1, outputs.size(1), 1)
+                # Compute loss
+                loss = criterion(outputs, batch_y)
+                # Accumulate validation loss
+                val_loss += loss.item()
+                
+            # Compute average validation loss
+            val_loss /= len(val_loader)
+         # Log the metrics to Tensorboard
+        
+
+
+        # Print training and validation loss for current epoch
+        print(f"Epoch {epoch+1}/{num_epochs}: train_loss={train_loss:.6f}, val_loss={val_loss:.6f}")
+    
+    return model
