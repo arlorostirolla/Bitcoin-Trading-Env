@@ -222,3 +222,30 @@ def create_dataset(data):
     y = np.array(y)
     print(f"Created {len(X)} input/output sequences")
     return X, y
+
+def load_and_preprocess_data(filename):
+    df = pd.read_csv(filename)
+    df['timestamp'] = pd.to_datetime(df['timestamp'], format="%Y-%m-%d")
+    df.set_index('timestamp', inplace=True)
+
+    # Add technical indicators
+    df = ta.add_all_ta_features(df, "open", "high", "low", "close", "volume", fillna=True)
+
+    # Normalize the data
+    scaler = MinMaxScaler()
+    df[df.columns] = scaler.fit_transform(df[df.columns])
+
+    # Split the data into train and validation sets
+    train_size = int(len(df) * 0.7)
+    train_df, val_df = df[:train_size], df[train_size:]
+
+    # Convert the data to PyTorch tensors
+    train_X, train_y = create_dataset(train_df.values)
+    val_X, val_y = create_dataset(val_df.values)
+    print(f"X shape: {train_X.shape}, X data type: {train_X.dtype}")
+    print(f"y shape: {train_y.shape}, y data type: {train_y.dtype}")
+
+    train_dataset = TimeSeriesDataset(train_X, train_y)
+    val_dataset = TimeSeriesDataset(val_X, val_y)
+
+    return train_dataset, val_dataset
