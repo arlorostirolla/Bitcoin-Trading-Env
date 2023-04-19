@@ -176,3 +176,29 @@ def train_tft_model(model, train_loader, val_loader, num_epochs, learning_rate, 
         print(f"Epoch {epoch+1}/{num_epochs}: train_loss={train_loss:.6f}, val_loss={val_loss:.6f}")
     
     return model
+
+def objective(trial, data, device):
+    # Perform hyperparameter optimization using Optuna
+    train_loader, val_loader = data
+
+    # Define hyperparameters to optimize
+    d_model = trial.suggest_int("d_model", 64, 256)
+    num_heads = trial.suggest_int("num_heads", 1, 8)
+    num_blocks = trial.suggest_int("num_blocks", 1, 4)
+    dropout_rate = trial.suggest_float("dropout_rate", 0.1, 0.5)
+    learning_rate = trial.suggest_loguniform("learning_rate", 1e-4, 1e-2)
+    num_epochs = trial.suggest_int("num_epochs", 10, 100)
+
+    # Ensure the d_model is divisible by the number of heads
+    if d_model % num_heads != 0:
+        return np.inf
+
+    # Create the model
+    num_inputs = train_loader.dataset.X.shape[-1]
+    num_outputs = train_loader.dataset.y.shape[-1]
+    model = TemporalFusionTransformer(num_inputs, num_outputs, d_model, num_heads, num_blocks, dropout_rate)
+
+    # Train and evaluate the model
+    val_loss = train_tft_model(model, train_loader, val_loader, num_epochs, learning_rate, device)
+
+    return val_loss
