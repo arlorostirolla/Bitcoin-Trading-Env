@@ -249,3 +249,18 @@ def load_and_preprocess_data(filename):
     val_dataset = TimeSeriesDataset(val_X, val_y)
 
     return train_dataset, val_dataset
+
+def generate_sliding_window(data, input_seq_len, output_seq_len):
+    X = []
+    y = []
+    for i in range(len(data) - input_seq_len - output_seq_len):
+        input_seq = data[i:i+input_seq_len]
+        if all(input_seq.shape == input_seq[0].shape for input_seq in input_seq):
+            X.append(np.array(input_seq))
+            output_seq = data[i+input_seq_len:i+input_seq_len+output_seq_len][:,-1]
+            y.append(np.array(output_seq))
+    X = np.array(X)
+    y = np.array(y)
+    print("X shape:", X.shape, ", X data type:", X.dtype)
+    print("y shape:", y.shape, ", y data type:", y.dtype)
+    return X, y
