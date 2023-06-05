@@ -7,6 +7,20 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.model_selection import train_test_split
 
+
+class TimeSeriesDataset(torch.utils.data.Dataset):
+    def __init__(self, X, y):
+        super(TimeSeriesDataset, self).__init__()
+        self.X = torch.tensor(X, dtype=torch.float32)
+        self.y = torch.tensor(y, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
+    
+    
 class GLU(nn.Module):
     def __init__(self, input_size, output_size):
         super(GLU, self).__init__()
@@ -18,7 +32,7 @@ class GLU(nn.Module):
         linear = self.fc_linear(x)
         gates = self.sigmoid(self.fc_gates(x))
         return linear * gates
-        
+
 class MultiheadSelfAttention(nn.Module):
     def __init__(self, d_model, num_heads):
         super(MultiheadSelfAttention, self).__init__()
@@ -59,7 +73,7 @@ class MultiheadSelfAttention(nn.Module):
         context = self.combine_heads(context)
         output = self.fc_out(context)
         return output
-        
+
 class GatedResidualNetwork(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, dropout_rate=0.1):
         super(GatedResidualNetwork, self).__init__()
@@ -118,7 +132,6 @@ class TemporalFusionTransformer(nn.Module):
         x = self.fc_out(x)
         return x
 
-        
 def train_tft_model(model, train_loader, val_loader, num_epochs, learning_rate, device):
     model.to(device)
     # Define the optimizer and loss function
@@ -175,7 +188,7 @@ def train_tft_model(model, train_loader, val_loader, num_epochs, learning_rate, 
         # Print training and validation loss for current epoch
         print(f"Epoch {epoch+1}/{num_epochs}: train_loss={train_loss:.6f}, val_loss={val_loss:.6f}")
     
-    return model
+    return model, val_loss
 
 def objective(trial, data, device):
     # Perform hyperparameter optimization using Optuna
@@ -187,11 +200,11 @@ def objective(trial, data, device):
     num_blocks = trial.suggest_int("num_blocks", 1, 4)
     dropout_rate = trial.suggest_float("dropout_rate", 0.1, 0.5)
     learning_rate = trial.suggest_loguniform("learning_rate", 1e-4, 1e-2)
-    num_epochs = trial.suggest_int("num_epochs", 10, 100)
+    num_epochs = trial.suggest_int("num_epochs", 10, 500)
 
     # Ensure the d_model is divisible by the number of heads
     if d_model % num_heads != 0:
-        return np.inf
+        raise optuna.TrialPruned()
 
     # Create the model
     num_inputs = train_loader.dataset.X.shape[-1]
@@ -199,9 +212,34 @@ def objective(trial, data, device):
     model = TemporalFusionTransformer(num_inputs, num_outputs, d_model, num_heads, num_blocks, dropout_rate)
 
     # Train and evaluate the model
-    val_loss = train_tft_model(model, train_loader, val_loader, num_epochs, learning_rate, device)
-
+    model, val_loss = train_tft_model(model, train_loader, val_loader, num_epochs, learning_rate, device)
     return val_loss
+
+
+def fetch_historical_data(symbol, timeframe, output_file):
+    exchange = ccxt.binance({
+        "rateLimit": 1200, # Adjust the rate limit according to the exchange's requirements
+        "enableRateLimit": True,
+    })
+
+    all_candles = []
+    limit = 1000
+    since = exchange.parse8601('2017-01-01T00:00:00Z')
+    until = exchange.parse8601('2023-04-19T00:00:00Z')
+
+    while since < until:
+        candles = exchange.fetch_ohlcv(symbol, timeframe, limit=limit, since=since)
+        if not candles:
+            break
+        all_candles += candles
+        since = candles[-1][0] + exchange.parse_timeframe(timeframe) * 1000
+        time.sleep(exchange.rateLimit / 1000)
+
+    df = pd.DataFrame(all_candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    
+    df.dropna(inplace=True)
+    df.to_csv(output_file, index=False)
 
 def create_dataset(data):
     X, y = [], []
@@ -264,3 +302,62 @@ def generate_sliding_window(data, input_seq_len, output_seq_len):
     print("X shape:", X.shape, ", X data type:", X.dtype)
     print("y shape:", y.shape, ", y data type:", y.dtype)
     return X, y
+
+# Add a `trade` function to use the trained model for making trading decisions
+def trade(model, data, input_seq_len, output_seq_len, device, threshold):
+    model.eval()
+    with torch.no_grad():
+        X, y = generate_sliding_window(data, input_seq_len, output_seq_len)
+        dataset = TimeSeriesDataset(X, y)
+        loader = DataLoader(dataset, batch_size=1, shuffle=False)
+
+        decisions = []
+
+        for batch_x, _ in loader:
+            batch_x = batch_x.to(device)
+            output = model(batch_x)
+            pred = output.cpu().numpy().flatten()
+            decision = np.sign(pred[-1] - pred[-2])
+            if decision > threshold:
+                decision = 1  # Buy
+            elif decision < -threshold:
+                decision = -1  # Sell
+            else:
+                decision = 0  # Hold
+
+            decisions.append(decision)
+
+    return decisions
+
+if __name__ == "__main__":
+    symbol = "BTC/USDT"
+    timeframe = "1d"  # Daily candles
+    output_file = "btc_historical_data.csv"
+    if not os.path.exists(output_file):
+        fetch_historical_data(symbol, timeframe, output_file)
+    train, val = load_and_preprocess_data(output_file)
+
+    # Generate input and output sequences
+    input_seq_len = 30
+    output_seq_len = 5
+    X_train, y_train = generate_sliding_window(train, input_seq_len, output_seq_len)
+    X_val, y_val = generate_sliding_window(val, input_seq_len, output_seq_len)
+
+    # Create DataLoader objects
+    train_loader = DataLoader(train, batch_size=30, shuffle=True)
+    val_loader = DataLoader(val, batch_size=30, shuffle=False)
+
+    # Set device
+    device = torch.device("cuda")
+    best_model_path = "./best_model.pt"
+    # Perform hyperparameter optimization
+    study = optuna.create_study(direction="minimize")
+    study.set_user_attr('initial_best_value', float('inf'))
+    study.optimize(lambda trial: objective(trial, (train_loader, val_loader), device), n_trials=1000)
+
+    # Print best hyperparameters
+    print("Best trial:")
+    print("  Value: {}".format(study.best_trial.value))
+    print("  Params: ")
+    for key, value in study.best_trial.params.items():
+        print("    {}: {}".format(key, value))
